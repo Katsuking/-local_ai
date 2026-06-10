@@ -68,11 +68,43 @@ if cuda_lib_dir:
 import time
 import threading
 import subprocess
+import fcntl  # 二重起動防止のファイルロック用に追加
 import numpy as np
 import sounddevice as sd
 import pyperclip
 from pynput import keyboard
 from faster_whisper import WhisperModel
+
+# ==========================================
+# 2.5 二重起動チェック (排他ロックの取得)
+# ==========================================
+lock_file = None
+
+
+def ensure_single_instance():
+  """
+  二重起動を防止するため、ロックファイルを作成して排他ロックを取得します。
+  既に別プロセスがロックを保持している場合は、即座に終了します。
+  """
+  global lock_file
+  lock_path = os.path.expanduser("~/.voice_input.lock")
+  try:
+    lock_file = open(lock_path, "w")
+    # flock でノンブロッキング排他ロックを取得
+    fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+  except IOError:
+    print("[音声入力] ⚠️ 既に別の音声入力プロセスが起動しています。終了します。")
+    # 重複起動の場合はデスクトップ通知を送り、ユーザーに知らせます
+    try:
+      subprocess.run(["notify-send", "-t", "3000", "音声入力", "⚠️ 既に起動しています"])
+    except Exception:
+      pass
+    sys.exit(0)
+
+
+# 重複起動をチェック
+ensure_single_instance()
+
 
 # ==========================================
 # 設定パラメータと引数処理
@@ -260,7 +292,7 @@ def main():
   else:
     print("[音声入力] システム標準の CUDA ライブラリパスを使用します。")
 
-  print("[音声入力] GPU (RTX 3060) で Whisper モデル (large-v3) をロードしています...")
+  print(f"[音声入力] GPU (RTX 3060) で Whisper モデル ({MODEL_SIZE}) をロードしています...")
   send_notification("音声入力", "🚀 モデルをロード中...")
 
   # モデルのロード (これには初回のダウンロードやGPUロードで数十秒かかる場合があります)
