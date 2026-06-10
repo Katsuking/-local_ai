@@ -1,40 +1,100 @@
-from faster_whisper import WhisperModel
-from pynput import keyboard
-import pyperclip
-import sounddevice as sd
-import numpy as np
-import subprocess
-import threading
-import time
 import os
 import sys
+import glob
+import ctypes.util
+import argparse
 
-# ==========================================
-# CUDA 共有ライブラリの動的パス追加処理
-# ==========================================
-# ctranslate2 が必要とする libcublas.so.12 を、システム上の Ollama が持つ CUDA 12 パスから読み込めるようにします。
+# ==============================================================================
+# 1. 起動前ブートストラップ処理 (CUDA 共有ライブラリ of 自動検出と動的リンク)
+# ==============================================================================
+# ctranslate2 が必要とする libcublas.so.12 がシステム内のどこにあるかを自動検索します。
 # プロセス開始後に os.environ で LD_LIBRARY_PATH を書き換えても動的リンカは認識しないため、
-# パスを設定した上で os.execve() を使用して自分自身（プロセス）を再起動します。
-OLLAMA_CUDA_PATH = "/usr/local/lib/ollama/cuda_v12"
-if os.path.isdir(OLLAMA_CUDA_PATH):
+# 検出されたパスを環境変数に追加した上で os.execve() で自分自身を再起動します。
+
+
+def find_cuda_library_path():
+  """
+  システム上の libcublas.so.12 の配置ディレクトリを自動検知します。
+  """
+  # すでにシステム（LD_LIBRARY_PATH等）が libcublas.so.12 を見つけられる場合は追加設定不要
+  if ctypes.util.find_library("cublas"):
+    return None
+
+  # 代表的な CUDA 12 の配置パス（Ollama、公式ツールキット、apt等）
+  candidates = [
+      "/usr/local/lib/ollama/cuda_v12",     # Ollama (CUDA 12)
+      "/usr/local/cuda-12/lib64",            # 公式 CUDA Toolkit 12
+      "/usr/local/cuda/lib64",               # 公式 CUDA シンボリックリンク
+      "/usr/lib/x86_64-linux-gnu",           # apt で入る一般的なライブラリパス
+      "/usr/lib64",                          # 一部のディストリビューション
+      "/opt/cuda/targets/x86_64-linux/lib",  # Arch Linux など
+  ]
+
+  for path in candidates:
+    if os.path.isdir(path) and os.path.exists(os.path.join(path, "libcublas.so.12")):
+      return path
+
+  # 候補になければ、主要なシステムディレクトリ内を高速スキャン
+  search_dirs = ["/usr/local", "/opt", "/usr/lib"]
+  for s_dir in search_dirs:
+    if os.path.isdir(s_dir):
+      # glob.glob で libcublas.so.12 の場所を探す
+      matches = glob.glob(os.path.join(
+          s_dir, "**/libcublas.so.12"), recursive=True)
+      if matches:
+        return os.path.dirname(matches[0])
+
+  return None
+
+
+# 動的リンクパスの判定とプロセスの再起動実行
+cuda_lib_dir = find_cuda_library_path()
+if cuda_lib_dir:
   current_ld_path = os.environ.get("LD_LIBRARY_PATH", "")
-  if OLLAMA_CUDA_PATH not in current_ld_path.split(":"):
-    new_ld_path = f"{OLLAMA_CUDA_PATH}:{current_ld_path}" if current_ld_path else OLLAMA_CUDA_PATH
+  if cuda_lib_dir not in current_ld_path.split(":"):
+    new_ld_path = f"{cuda_lib_dir}:{current_ld_path}" if current_ld_path else cuda_lib_dir
     os.environ["LD_LIBRARY_PATH"] = new_ld_path
+    print(f"[音声入力] CUDA ライブラリ検出パスを追加して再起動します: {cuda_lib_dir}")
     try:
       # 環境変数を更新した状態でプロセスを起動し直します
       os.execve(sys.executable, [sys.executable] + sys.argv, os.environ)
+
     except Exception as e:
       print(f"[音声入力] 動的リンク追加後の再起動に失敗しました: {e}")
 
+# ==============================================================================
+# 2. 必要なライブラリのインポート (環境変数が反映された状態で安全にロードされます)
+# ==============================================================================
+import time
+import threading
+import subprocess
+import numpy as np
+import sounddevice as sd
+import pyperclip
+from pynput import keyboard
+from faster_whisper import WhisperModel
 
 # ==========================================
-# 設定パラメータ
+# 設定パラメータと引数処理
 # ==========================================
-MODEL_SIZE = "large-v3"       # RTX 3060 の VRAM 性能を最大限活かすため、最も高精度な large-v3 を使用
+# コマンドライン引数を解析し、モデルサイズを指定できるようにします
+parser = argparse.ArgumentParser(description="F8キーによるインメモリ音声入力ツール")
+parser.add_argument(
+    "--model",
+    type=str,
+    default="medium",
+    choices=["tiny", "base", "small", "medium", "large-v3"],
+    help="使用するWhisperモデルのサイズを指定します (デフォルト: medium)"
+)
+# 他のライブラリ（pynput等）の引数と競合しないように parse_known_args を使用します
+args, unknown = parser.parse_known_args()
+
+MODEL_SIZE = args.model       # コマンドライン引数からモデル名を取得 (指定がない場合は medium)
 DEVICE = "cuda"               # GPU (CUDA) 加速を有効化
 COMPUTE_TYPE = "float16"      # 半精度浮動小数点 (float16) を使用し、処理の高速化と VRAM 節約を両立
 SAMPLE_RATE = 16000           # Whisperモデルが要求する標準サンプリングレート (16kHz)
+
+
 
 # ==========================================
 # グローバル状態管理
@@ -187,6 +247,19 @@ def main():
   メインエントリーポイント。モデルを初期化し、グローバルキーボードリスナーを起動します。
   """
   global model
+
+  # 使用する CUDA ライブラリパスを特定してターミナルに出力
+  used_path = None
+  ld_paths = os.environ.get("LD_LIBRARY_PATH", "").split(":")
+  for p in ld_paths:
+    if p and (("cuda" in p) or ("nvidia" in p) or ("ollama" in p)):
+      used_path = p
+      break
+  if used_path:
+    print(f"[音声入力] 使用する CUDA ライブラリパス: {used_path}")
+  else:
+    print("[音声入力] システム標準の CUDA ライブラリパスを使用します。")
+
   print("[音声入力] GPU (RTX 3060) で Whisper モデル (large-v3) をロードしています...")
   send_notification("音声入力", "🚀 モデルをロード中...")
 

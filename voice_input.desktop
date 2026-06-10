@@ -1,16 +1,8 @@
-# [Desktop Entry] はこのファイルがデスクトップエントリであることを示します
 [Desktop Entry]
-# Type=Application は、これがアプリケーションの起動用であることを示します
 Type=Application
-# デスクトップ環境で表示されるサービス名です
 Name=Voice Input Service
-# サービスの説明です
 Comment=F8キーで音声入力を行うインメモリWhisperサービス
-# 実行するコマンドの絶対パスを指定します（仮想環境の python と voice_input.py）
-Exec=/home/mojo/deb/local_ai/venv/bin/python /home/mojo/deb/local_ai/voice_input.py
-# バックグラウンド実行するため、別個のターミナルウィンドウは開かないようにします
+Exec=/home/mojo/deb/local_ai/venv/bin/python /home/mojo/deb/local_ai/voice_input.py --model large-v3
 Terminal=false
-# アプリケーションのカテゴリです
 Categories=Utility;
-# GNOMEデスクトップの自動起動を有効化します
 X-GNOME-Autostart-enabled=true
