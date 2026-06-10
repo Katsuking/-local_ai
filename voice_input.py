@@ -213,16 +213,6 @@ def process_audio():
   # メモリ上の音声バッファを結合して平坦な NumPy 配列にします (ファイル書き出しなし)
   audio_data = np.concatenate(audio_buffer, axis=0).flatten()
 
-  # 録音データの音量 (RMS) を算出して無音判定を行います (ハルシネーション防止)
-  if len(audio_data) > 0:
-    rms = np.sqrt(np.mean(audio_data**2))
-    # 実際の音量数値をターミナルに表示して調整しやすくします
-    print(f"[音声入力] 録音データの音量 (RMS): {rms:.5f}")
-    # マイクの環境ノイズ等を考慮し、RMS値が 0.012 未満の場合は無音と判断して処理をスキップ
-    if rms < 0.01:
-      print(f"[音声入力] 音量が小さすぎるため処理をスキップします (RMS: {rms:.5f} < 閾値: 0.012)")
-      send_notification("音声入力", "⚠️ 音声が検知されませんでした")
-      return
 
   try:
     start_time = time.time()
